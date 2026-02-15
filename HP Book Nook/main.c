@@ -4,11 +4,12 @@
  * Created: 2/14/2026 3:40:30 PM
  *  Author: Warrick
  *
- * Button-controlled LED timer:
- * - PA2 (physical pin 5): Button input (active high)
+ * Motion-activated LED timer:
+ * - PA2 (physical pin 5): Motion sensor input (active high)
  * - PA6: LED output
- * - When button pressed, LED turns on for 20 seconds
- * - Each button press resets the 20-second timer
+ * - LED turns on immediately when motion detected
+ * - LED stays on while motion continues (timer resets continuously)
+ * - LED turns off 20 seconds after motion stops
  *
  * Default clock: 20 MHz internal oscillator with /6 prescaler = 3.333 MHz
  */
@@ -69,23 +70,17 @@ int main(void)
     /* Enable global interrupts */
     sei();
 
-    uint8_t last_button_state = 0;
-
     while (1)
     {
-        /* Read button state (active low with pull-up) */
-        uint8_t button_pressed = !(PORTA.IN & PIN2_bm);
+        /* Read button/motion sensor state (active low with pull-up) */
+        uint8_t motion_detected = !(PORTA.IN & PIN2_bm);
 
-        /* Detect button press (transition from not pressed to pressed) */
-        if (button_pressed && !last_button_state)
+        if (motion_detected)
         {
-            /* Reset timer to 20 seconds */
-            led_timer = 20;
-
-            /* Turn on LED */
+            /* Motion detected: turn on LED and reset timer */
             PORTA.OUTSET = PIN6_bm;
+            led_timer = 5;
         }
-
-        last_button_state = button_pressed;
+        /* If no motion, timer will count down via ISR and turn off LED at 0 */
     }
 }
