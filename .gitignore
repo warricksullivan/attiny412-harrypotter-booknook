@@ -1,0 +1,26 @@
+# Documentation (large binary PDFs)
+Docs/
+
+# Build output
+Debug/
+Release/
+
+# Atmel Studio / Visual Studio
+.vs/
+*.atsuo
+*.atsln.metainfo
+
+# Compiled objects and intermediates
+*.o
+*.d
+*.elf
+*.hex
+*.eep
+*.lss
+*.map
+*.srec
+makedep.mk
+
+# Generated files
+*.componentinfo.xml
+memoryfile.xml
