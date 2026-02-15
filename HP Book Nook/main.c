@@ -4,8 +4,11 @@
  * Created: 2/14/2026 3:40:30 PM
  *  Author: Warrick
  *
- * Blinks an LED on PA6 at 1 Hz (toggle every 1 second).
- * Uses TCA0 in Normal mode with overflow interrupt.
+ * Button-controlled LED timer:
+ * - PA2 (physical pin 5): Button input (active high)
+ * - PA6: LED output
+ * - When button pressed, LED turns on for 20 seconds
+ * - Each button press resets the 20-second timer
  *
  * Default clock: 20 MHz internal oscillator with /6 prescaler = 3.333 MHz
  */
@@ -13,25 +16,42 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
+/* Global timer countdown in seconds (0 = LED off) */
+volatile uint8_t led_timer = 0;
+
 /*
- * TCA0 overflow ISR — toggles the LED.
+ * TCA0 overflow ISR — ticks at 1 Hz, decrements timer.
  * CLK_PER = 3.333 MHz, TCA prescaler /1024 -> 3255 Hz tick rate.
  * PER = 3254 -> overflow at ~1.0 Hz.
  */
-
 ISR(TCA0_OVF_vect)
 {
     /* Clear the interrupt flag */
     TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm;
 
-    /* Toggle LED on PA6 */
-    PORTA.OUTTGL = PIN6_bm;
+    /* Decrement timer if active */
+    if (led_timer > 0)
+    {
+        led_timer--;
+
+        /* Turn off LED when timer expires */
+        if (led_timer == 0)
+        {
+            PORTA.OUTCLR = PIN6_bm;
+        }
+    }
 }
 
 int main(void)
 {
-    /* Configure PA6 as output */
+    /* Configure PA6 as output (LED) */
     PORTA.DIRSET = PIN6_bm;
+
+    /* Configure PA2 as input (button) */
+    PORTA.DIRCLR = PIN2_bm;
+
+    /* Enable pull-up on PA2 (button connects to GND when pressed) */
+    PORTA.PIN2CTRL = PORT_PULLUPEN_bm;
 
     /* Start with LED off */
     PORTA.OUTCLR = PIN6_bm;
@@ -49,8 +69,23 @@ int main(void)
     /* Enable global interrupts */
     sei();
 
+    uint8_t last_button_state = 0;
+
     while (1)
     {
-        /* LED toggling handled by TCA0 overflow ISR */
+        /* Read button state (active low with pull-up) */
+        uint8_t button_pressed = !(PORTA.IN & PIN2_bm);
+
+        /* Detect button press (transition from not pressed to pressed) */
+        if (button_pressed && !last_button_state)
+        {
+            /* Reset timer to 20 seconds */
+            led_timer = 20;
+
+            /* Turn on LED */
+            PORTA.OUTSET = PIN6_bm;
+        }
+
+        last_button_state = button_pressed;
     }
 }
