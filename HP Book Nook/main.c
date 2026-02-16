@@ -22,7 +22,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
-#include <util/delay.h>
+#include <avr/power.h>
 
 #define MOTION_PIN   PIN2_bm
 #define LATCH_PIN    PIN6_bm
@@ -48,14 +48,15 @@ volatile uint8_t shift_reg_state = 0;
  * - PA3 (SCK): Clock
  * - CLK_PER/64 = ~52 kHz (slower for reliability)
  * - MSB first, mode 0 (CPOL=0, CPHA=0)
+ * - SPI is disabled after init; shift_out() enables it per transfer
  */
 static void spi_init(void)
 {
     /* Configure PA1 (MOSI) and PA3 (SCK) as outputs */
     PORTA.DIRSET = PIN1_bm | PIN3_bm;
 
-    /* Enable SPI master, MSB first, mode 0, CLK/64 (slower for debugging) */
-    SPI0.CTRLA = SPI_MASTER_bm | SPI_PRESC_DIV64_gc | SPI_ENABLE_bm;
+    /* Configure SPI master, MSB first, mode 0, CLK/64, but leave disabled */
+    SPI0.CTRLA = SPI_MASTER_bm | SPI_PRESC_DIV64_gc;
 
     /* Mode 0: CPOL=0, CPHA=0, SSD=1 (client select disable) */
     SPI0.CTRLB = SPI_SSD_bm | SPI_MODE_0_gc;
@@ -64,9 +65,13 @@ static void spi_init(void)
 /*
  * Shift out a byte to the 74HC595 and latch it.
  * Updates the shift register outputs immediately.
+ * Disables SPI after transfer to save power during sleep.
  */
 static void shift_out(uint8_t data)
 {
+    /* Enable SPI before transfer */
+    SPI0.CTRLA |= SPI_ENABLE_bm;
+
     /* Ensure latch is low before shifting */
     PORTA.OUTCLR = LATCH_PIN;
 
@@ -85,6 +90,9 @@ static void shift_out(uint8_t data)
     /* Pulse latch pin HIGH to transfer shift register to output register */
     PORTA.OUTSET = LATCH_PIN;
     PORTA.OUTCLR = LATCH_PIN;
+
+    /* Disable SPI to save power during sleep */
+    SPI0.CTRLA &= ~SPI_ENABLE_bm;
 }
 
 /*
@@ -95,9 +103,6 @@ ISR(PORTA_PORT_vect)
 {
     /* Clear the interrupt flag */
     PORTA.INTFLAGS = MOTION_PIN;
-
-    /* Toggle PA7 for debugging (visible on scope/LED) */
-    PORTA.OUTTGL = PIN7_bm;
 
     /* Motion detected: turn on all LED strips and reset timer */
     shift_reg_state = ALL_LEDS;
@@ -141,10 +146,6 @@ int main(void)
     /* Configure PA6 as output (latch pin for 74HC595) */
     PORTA.DIRSET = LATCH_PIN;
     PORTA.OUTCLR = LATCH_PIN; /* Start low */
-
-    /* Configure PA7 as output for debug */
-    PORTA.DIRSET = PIN7_bm;
-    PORTA.OUTCLR = PIN7_bm;
 
     /* Configure PA2 as input with pull-up, falling-edge interrupt */
     PORTA.DIRCLR = MOTION_PIN;
