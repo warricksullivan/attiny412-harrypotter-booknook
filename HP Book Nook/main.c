@@ -9,10 +9,11 @@
  * - PA2 (physical pin 5): Motion sensor input (active low with pull-up)
  * - PA3: SPI SCK -> 74HC595 SRCLK (pin 11)
  * - PA6: Latch pin -> 74HC595 RCLK (pin 12)
- * - LED outputs via shift register (QA-QE for 5 LED strips)
- * - LED turns on immediately when motion detected
- * - LED stays on while motion continues (timer resets continuously)
- * - LED turns off 5 seconds after motion stops
+ * - LED outputs via shift register (Q0-Q4 for 5 LED strips)
+ * - Per-strip enable/disable via enabled_strips bitmask
+ * - Enabled LED strips turn on immediately when motion detected
+ * - LED strips stay on while motion continues (timer resets continuously)
+ * - LED strips turn off 5 seconds after motion stops
  *
  * Default clock: 20 MHz internal oscillator with /6 prescaler = 3.333 MHz
  */
@@ -41,6 +42,12 @@ volatile uint8_t led_timer = 0;
 
 /* Current shift register state */
 volatile uint8_t shift_reg_state = 0;
+
+/* Per-strip enable/disable mask.
+ * Each bit controls whether that strip participates in motion detection.
+ * Strips can still be controlled manually regardless of this mask.
+ */
+uint8_t motion_enabled_strips = ALL_LEDS;  /* All respond to motion by default */
 
 /*
  * Initialize SPI in master mode for 74HC595 communication.
@@ -96,16 +103,68 @@ static void shift_out(uint8_t data)
 }
 
 /*
+ * Turn on specific LED strip(s) immediately.
+ */
+static inline void strip_on(uint8_t strip_mask)
+{
+    shift_reg_state |= strip_mask;
+    shift_out(shift_reg_state);
+}
+
+/*
+ * Turn off specific LED strip(s) immediately.
+ */
+static inline void strip_off(uint8_t strip_mask)
+{
+    shift_reg_state &= ~strip_mask;
+    shift_out(shift_reg_state);
+}
+
+/*
+ * Set the strip state directly (turns on only the specified strips).
+ */
+static inline void strip_set(uint8_t strip_mask)
+{
+    shift_reg_state = strip_mask;
+    shift_out(shift_reg_state);
+}
+
+/*
+ * Toggle specific LED strip(s).
+ */
+static inline void strip_toggle(uint8_t strip_mask)
+{
+    shift_reg_state ^= strip_mask;
+    shift_out(shift_reg_state);
+}
+
+/*
+ * Enable strip(s) to respond to motion detection.
+ */
+static inline void strip_motion_enable(uint8_t strip_mask)
+{
+    motion_enabled_strips |= strip_mask;
+}
+
+/*
+ * Disable strip(s) from responding to motion detection.
+ */
+static inline void strip_motion_disable(uint8_t strip_mask)
+{
+    motion_enabled_strips &= ~strip_mask;
+}
+
+/*
  * PA2 pin-change ISR — fires on falling edge (motion detected).
- * Turns all LEDs on immediately and resets the timeout.
+ * Turns on motion-enabled LED strips and resets the timeout.
  */
 ISR(PORTA_PORT_vect)
 {
     /* Clear the interrupt flag */
     PORTA.INTFLAGS = MOTION_PIN;
 
-    /* Motion detected: turn on all LED strips and reset timer */
-    shift_reg_state = ALL_LEDS;
+    /* Motion detected: turn on motion-enabled LED strips and reset timer */
+    shift_reg_state |= motion_enabled_strips;
     shift_out(shift_reg_state);
     led_timer = TIMEOUT_SEC;
 }
@@ -116,7 +175,7 @@ ISR(PORTA_PORT_vect)
  * PER = 3254 -> overflow at ~1.0 Hz.
  *
  * If PA2 is still active (held low), resets the timer.
- * Otherwise decrements, turning off all LEDs when it reaches 0.
+ * Otherwise decrements, turning off motion-enabled LEDs when it reaches 0.
  */
 ISR(TCA0_OVF_vect)
 {
@@ -125,17 +184,17 @@ ISR(TCA0_OVF_vect)
 
     if (!(PORTA.IN & MOTION_PIN))
     {
-        /* Motion sensor still active — keep LEDs on */
+        /* Motion sensor still active — keep motion-enabled LEDs on */
         led_timer = TIMEOUT_SEC;
     }
     else if (led_timer > 0)
     {
         led_timer--;
 
-        /* Turn off all LEDs when timer expires */
+        /* Turn off motion-enabled LEDs when timer expires */
         if (led_timer == 0)
         {
-            shift_reg_state = 0;
+            shift_reg_state &= ~motion_enabled_strips;
             shift_out(shift_reg_state);
         }
     }
