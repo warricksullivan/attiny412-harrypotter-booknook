@@ -9,6 +9,7 @@
  * - PA2 (physical pin 5): Motion sensor input (active low with pull-up)
  * - PA3: SPI SCK -> 74HC595 SRCLK (pin 11)
  * - PA6: Latch pin -> 74HC595 RCLK (pin 12)
+ * - PA7: Capacitive touch input (copper foil pad behind PLA)
  * - LED outputs via shift register (Q0-Q4 for 5 LED strips)
  * - Per-strip enable/disable via enabled_strips bitmask
  * - Enabled LED strips turn on immediately when motion detected
@@ -24,6 +25,7 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <avr/power.h>
+#include <util/delay.h>
 
 #define MOTION_PIN   PIN2_bm
 #define LATCH_PIN    PIN6_bm
@@ -37,6 +39,16 @@
 #define LED_STRIP_5  (1 << 4)
 #define ALL_LEDS     (LED_STRIP_1 | LED_STRIP_2 | LED_STRIP_3 | LED_STRIP_4 | LED_STRIP_5)
 
+/* Capacitive touch sensing */
+#define TOUCH_PIN          PIN7_bm
+#define TOUCH_ADC_CH       ADC_MUXPOS_AIN7_gc
+#define TOUCH_SAMPLES      64      /* Samples per scan (power of 2) */
+#define TOUCH_THRESHOLD    20      /* ADC counts above baseline = touch */
+#define TOUCH_DEBOUNCE     5       /* Consecutive readings to confirm */
+#define BASELINE_SHIFT     7       /* Baseline adaptation speed (slower) */
+#define BASELINE_INIT_CYCLES 16    /* Startup calibration samples */
+#define TCB_SCAN_TOP       41666   /* CLK_PER/2 / 41666 ≈ 40 Hz */
+
 /* Global timer countdown in seconds (0 = LED off) */
 volatile uint8_t led_timer = 0;
 
@@ -48,6 +60,12 @@ volatile uint8_t shift_reg_state = 0;
  * Strips can still be controlled manually regardless of this mask.
  */
 uint8_t motion_enabled_strips = ALL_LEDS;  /* All respond to motion by default */
+
+/* Capacitive touch state */
+volatile uint16_t touch_baseline = 0;
+volatile uint8_t touch_debounce_cnt = 0;
+volatile uint8_t touch_state = 0;  /* 0 = released, 1 = touched */
+
 
 /*
  * Initialize SPI in master mode for 74HC595 communication.
@@ -155,6 +173,89 @@ static inline void strip_motion_disable(uint8_t strip_mask)
 }
 
 /*
+ * Initialize ADC0 for capacitive touch sensing on PA7.
+ * - VDD reference, prescaler /16 (~208 kHz ADC clock)
+ * - 10-bit resolution, single conversion mode
+ * - PA7 digital input buffer disabled to reduce leakage
+ */
+static void adc_init(void)
+{
+    /* Disable digital input buffer on PA7 to reduce noise */
+    PORTA.PIN7CTRL = PORT_ISC_INPUT_DISABLE_gc;
+
+    /* CTRLC: VDD ref (REFSEL=0x1 in bits 5:4), prescaler /16 (PRESC=0x3 in bits 2:0)
+     * Using explicit hex to rule out define issues with XC8 */
+    ADC0.CTRLC = (0x01 << 4) | (0x03 << 0);  /* = 0x13 */
+
+    /* CTRLA: 10-bit (RESSEL=0, bit 2), enable (bit 0) */
+    ADC0.CTRLA = (1 << 0);  /* = 0x01 */
+
+    /* Select AIN7 (PA7) */
+    ADC0.MUXPOS = 0x07;
+}
+
+/*
+ * Take a single capacitive touch reading on PA7.
+ * Charges the pad by driving HIGH, then floats and samples with ADC.
+ * A finger adds capacitance, draining charge faster → lower reading.
+ */
+static uint16_t touch_measure_once(void)
+{
+    /* Disconnect ADC from pin during charge to avoid loading the pad */
+    ADC0.MUXPOS = 0x1F;  /* GND — disconnect from AIN7 */
+
+    /* Drive PA7 HIGH to charge the pad */
+    PORTA.DIRSET = TOUCH_PIN;
+    PORTA.OUTSET = TOUCH_PIN;
+
+    /* Longer charge time for reliable charging */
+    _delay_us(50);
+
+    /* Switch PA7 to high-Z input (float) */
+    PORTA.DIRCLR = TOUCH_PIN;
+    PORTA.OUTCLR = TOUCH_PIN;
+
+    /* Reconnect ADC and sample immediately */
+    ADC0.MUXPOS = 0x07;  /* AIN7 */
+
+    /* Start ADC conversion */
+    ADC0.COMMAND = ADC_STCONV_bm;
+
+    /* Wait for conversion complete */
+    while (!(ADC0.INTFLAGS & ADC_RESRDY_bm));
+
+    /* Reading clears the flag */
+    return ADC0.RES;
+}
+
+/*
+ * Take TOUCH_SAMPLES readings and return the average.
+ * Reduces noise for more reliable touch detection.
+ */
+static uint16_t touch_measure_filtered(void)
+{
+    uint16_t sum = 0;
+
+    for (uint8_t i = 0; i < TOUCH_SAMPLES; i++)
+    {
+        sum += touch_measure_once();
+    }
+
+    return sum >> 6;  /* Divide by 64 (TOUCH_SAMPLES) */
+}
+
+/*
+ * Initialize TCB0 for periodic capacitive touch scanning at ~40 Hz.
+ * Uses CLK_PER/2 prescaler in periodic interrupt mode.
+ */
+static void tcb0_init(void)
+{
+    TCB0.CCMP = TCB_SCAN_TOP;
+    TCB0.CTRLA = TCB_CLKSEL_CLKDIV2_gc | TCB_ENABLE_bm;
+    TCB0.INTCTRL = TCB_CAPT_bm;
+}
+
+/*
  * PA2 pin-change ISR — fires on falling edge (motion detected).
  * Turns on motion-enabled LED strips and resets the timeout.
  */
@@ -200,6 +301,60 @@ ISR(TCA0_OVF_vect)
     }
 }
 
+/*
+ * TCB0 capture ISR — fires at ~40 Hz for capacitive touch scanning.
+ * Reads filtered ADC value, compares against adaptive baseline,
+ * debounces state changes, and toggles all LEDs on touch/release.
+ */
+ISR(TCB0_INT_vect)
+{
+    /* Clear the interrupt flag */
+    TCB0.INTFLAGS = TCB_CAPT_bm;
+
+    uint16_t reading = touch_measure_filtered();
+    uint16_t baseline = touch_baseline;
+
+    /* Touch INCREASES reading (finger holds charge longer on this pad) */
+    uint8_t tentative = (reading > baseline) && ((reading - baseline) >= TOUCH_THRESHOLD);
+
+    if (tentative != touch_state)
+    {
+        touch_debounce_cnt++;
+
+        if (touch_debounce_cnt >= TOUCH_DEBOUNCE)
+        {
+            touch_state = tentative;
+            touch_debounce_cnt = 0;
+
+            if (touch_state)
+            {
+                strip_on(ALL_LEDS);
+            }
+            else
+            {
+                strip_off(ALL_LEDS);
+            }
+        }
+    }
+    else
+    {
+        touch_debounce_cnt = 0;
+    }
+
+    /* Adaptive baseline: slowly track readings when not touched */
+    if (!touch_state)
+    {
+        if (reading > baseline)
+        {
+            touch_baseline += (reading - baseline) >> BASELINE_SHIFT;
+        }
+        else if (reading < baseline)
+        {
+            touch_baseline -= (baseline - reading) >> BASELINE_SHIFT;
+        }
+    }
+}
+
 int main(void)
 {
     /* Configure PA6 as output (latch pin for 74HC595) */
@@ -229,6 +384,20 @@ int main(void)
 
     /* Enable overflow interrupt */
     TCA0.SINGLE.INTCTRL = TCA_SINGLE_OVF_bm;
+
+    /* Initialize ADC for capacitive touch sensing */
+    adc_init();
+
+    /* Calibrate touch baseline (don't touch pad during power-up!) */
+    uint32_t baseline_sum = 0;
+    for (uint8_t i = 0; i < BASELINE_INIT_CYCLES; i++)
+    {
+        baseline_sum += touch_measure_filtered();
+    }
+    touch_baseline = (uint16_t)(baseline_sum / BASELINE_INIT_CYCLES);
+
+    /* Start capacitive touch scanning at ~40 Hz */
+    tcb0_init();
 
     /* Enable global interrupts */
     sei();
