@@ -49,8 +49,7 @@ Motion-activated LED strip controller in `main.c`:
 - **PA7**: Capacitive touch input — copper foil pad behind 2mm PLA, charge-and-measure via ADC
 
 ### 74HC595 Shift Register
-- 5 LED strips connected to Q0–Q4 (pins 15, 1-4)
-- Q5–Q7 unused
+- 8 LED strips connected to Q0–Q7 (pins 15, 1-7)
 - Pin 10 (SRCLR) tied to VCC (never reset)
 - Pin 13 (OE) tied to GND (always enabled)
 
@@ -85,7 +84,7 @@ Motion-activated LED strip controller in `main.c`:
 - **Motion control**: `strip_motion_enable()`, `strip_motion_disable()`
 - Strips can be controlled manually independent of motion detection
 
-Key constants: `MOTION_PIN`, `LATCH_PIN`, `TIMEOUT_SEC`, `TOUCH_PIN`, `TOUCH_THRESHOLD`, `TOUCH_SAMPLES`, `TOUCH_DEBOUNCE`, `BASELINE_SHIFT`, `LED_STRIP_1` through `LED_STRIP_5`, `ALL_LEDS`.
+Key constants: `MOTION_PIN`, `LATCH_PIN`, `TIMEOUT_SEC`, `TOUCH_PIN`, `TOUCH_THRESHOLD`, `TOUCH_SAMPLES`, `TOUCH_DEBOUNCE`, `BASELINE_SHIFT`, `LED_STRIP_1` through `LED_STRIP_8`, `ALL_LEDS`.
 
 ## Planned Features
 

@@ -10,7 +10,7 @@
  * - PA3: SPI SCK -> 74HC595 SRCLK (pin 11)
  * - PA6: Latch pin -> 74HC595 RCLK (pin 12)
  * - PA7: Capacitive touch input (copper foil pad behind PLA)
- * - LED outputs via shift register (Q0-Q4 for 5 LED strips)
+ * - LED outputs via shift register (Q0-Q7 for 8 LED strips)
  * - Per-strip enable/disable via enabled_strips bitmask
  * - Enabled LED strips turn on immediately when motion detected
  * - LED strips stay on while motion continues (timer resets continuously)
@@ -31,13 +31,16 @@
 #define LATCH_PIN    PIN6_bm
 #define TIMEOUT_SEC  5
 
-/* Shift register output bits (5 LED strips on QA-QE) */
+/* Shift register output bits (8 LED strips on QA-QH) */
 #define LED_STRIP_1  (1 << 0)
 #define LED_STRIP_2  (1 << 1)
 #define LED_STRIP_3  (1 << 2)
 #define LED_STRIP_4  (1 << 3)
 #define LED_STRIP_5  (1 << 4)
-#define ALL_LEDS     (LED_STRIP_1 | LED_STRIP_2 | LED_STRIP_3 | LED_STRIP_4 | LED_STRIP_5)
+#define LED_STRIP_6  (1 << 5)
+#define LED_STRIP_7  (1 << 6)
+#define LED_STRIP_8  (1 << 7)
+#define ALL_LEDS     0xFF
 
 /* Capacitive touch sensing */
 #define TOUCH_PIN          PIN7_bm
